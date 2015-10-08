@@ -28,7 +28,7 @@ def makeGaussian(size, fwhm = 3, center=None):
         x0 = center[0]
         y0 = center[1]
 
-    return np.exp(-4*np.log(2) * ((x-x0)**2 + (y-y0)**2) / fwhm**2)
+    return np.exp(-4*np.log(2) * ((x-x0)**2 + (y-y0)**2) / fwhm**2).astype(np.float32)
 
 def sample_from_rotation_x(x):
     x_extends = []
@@ -42,6 +42,10 @@ def sample_from_rotation_x(x):
     x_extends = np.array(x_extends) #.transpose((0, 2, 3, 1))
     return x_extends
 
+
+def apply_filter(x, filt):
+    return np.array([ ex * filt for ex in x])
+
 def sample_from_rotation_y(y):
     y_extends = []
     for i in y:
@@ -49,13 +53,20 @@ def sample_from_rotation_y(y):
     return np.array(y_extends)
 
 
-class FlipBatchIterator(BatchIterator):
+class FlipBatchIterator(BatchIterator):    
     def transform(self, Xb, yb):
         Xb, yb = super(FlipBatchIterator, self).transform(Xb, yb)
         # Flip half of the images in this batch at random:
         bs = Xb.shape[0]
         indices = np.random.choice(bs, bs / 2, replace=False)
-        Xb[indices] = Xb[indices, :, ::-1, :]
+        Xb[indices] = Xb[indices, :, ::-1]
+        
+        # Drop randomly half of the features in each batch:
+        #bf = Xb.shape[2]
+        #indices_features = np.random.choice(bf, bf / 2, replace=False)
+        #Xb = Xb.transpose((2, 0, 1, 3))
+        #Xb[indices_features] = Xb[indices_features]
+        #Xb = Xb.transpose((1, 2, 0, 3))
         return Xb, yb
 
 def build_model(crop_value):    
@@ -79,15 +90,14 @@ def build_model(crop_value):
        (layers.DenseLayer, {'num_units': 18, 'nonlinearity':nonlinearities.softmax}),
    ] 
 
-
     net = NeuralNet(
         layers=L,
         update=adagrad,
         update_learning_rate=0.01,
         use_label_encoder=True,
         verbose=1,
-        max_epochs=50,
-        batch_iterator_train=FlipBatchIterator(batch_size=256),
+        max_epochs=100,
+        batch_iterator_train=FlipBatchIterator(batch_size=128),
         on_epoch_finished=[EarlyStopping(patience=50, criterion='valid_loss')]
         )
     return net
@@ -100,11 +110,12 @@ def keep_dim(layers):
 class Classifier(BaseEstimator):
 
     def __init__(self):
-        self.crop_value = 5
+        self.crop_value = 0
         self.net = make_pipeline(
             #GoogleNet(aggregate_function=keep_dim, layer_names=["input"]),
             build_model(self.crop_value)
         )
+        self.gaussianFilter = np.tile(makeGaussian(64-2*self.crop_value, 64-2*self.crop_value-10), (3,1,1)).transpose(1,2,0)
         
     def data_augmentation(self, X, y):
         X = sample_from_rotation_x(X)
@@ -113,10 +124,15 @@ class Classifier(BaseEstimator):
 
     def preprocess(self, X, transpose=True):
         X = (X / 255.)
+        #X = X[:, self.crop_value:64-self.crop_value, self.crop_value:64-self.crop_value, :]
+        print X.shape
+        print self.gaussianFilter.shape
+        X = apply_filter(X, self.gaussianFilter)
+        print X.shape
         X = X.astype(np.float32)
-        X = X[:, self.crop_value:64-self.crop_value, self.crop_value:64-self.crop_value, :]
         if transpose:
             X = X.transpose((0, 3, 1, 2))
+        print X.shape
         return X
     
     def preprocess_y(self, y):
