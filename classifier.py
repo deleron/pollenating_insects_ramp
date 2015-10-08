@@ -77,6 +77,7 @@ def build_model(crop_value):
        (layers.Conv2DLayer, {'num_filters':128, 'filter_size':(2,2), 'pad':0}),
        (layers.MaxPool2DLayer, {'pool_size': (4, 4)}),
        (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify, 'W': init.GlorotUniform(gain='relu')}),
+       (layers.DropoutLayer, {'p':0.5}),
        (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify, 'W': init.GlorotUniform(gain='relu')}),
        (layers.DenseLayer, {'num_units': 18, 'nonlinearity':nonlinearities.softmax}),
    ] 
@@ -130,3 +131,5 @@ class Classifier(BaseEstimator):
     def predict_proba(self, X):
         X = self.preprocess(X)
         return self.net.predict_proba(X)
+
+
