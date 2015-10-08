@@ -11,6 +11,25 @@ from caffezoo.googlenet import GoogleNet
 from itertools import repeat
 from sklearn.pipeline import make_pipeline
 
+def makeGaussian(size, fwhm = 3, center=None):
+    """ Make a square gaussian kernel.
+
+    size is the length of a side of the square
+    fwhm is full-width-half-maximum, which
+    can be thought of as an effective radius.
+    """
+
+    x = np.arange(0, size, 1, float)
+    y = x[:,np.newaxis]
+
+    if center is None:
+        x0 = y0 = size // 2
+    else:
+        x0 = center[0]
+        y0 = center[1]
+
+    return np.exp(-4*np.log(2) * ((x-x0)**2 + (y-y0)**2) / fwhm**2)
+
 def sample_from_rotation_x(x):
     x_extends = []
     for i in range(x.shape[0]):
@@ -39,24 +58,26 @@ class FlipBatchIterator(BatchIterator):
         Xb[indices] = Xb[indices, :, ::-1, :]
         return Xb, yb
 
-def build_model():    
+def build_model(crop_value):    
     L=[
-        #(layers.InputLayer, {'shape':(None, 3, 64, 64)}),
-        (layers.InputLayer, {'shape':(None, 3, 64, 64)}),
-        (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(2,2), 'pad':0}),
-        (layers.MaxPool2DLayer, {'pool_size': (3, 3)}),
-        (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(2,2), 'pad':0}),
-        (layers.MaxPool2DLayer, {'pool_size': (2, 2)}),
-        (layers.Conv2DLayer, {'num_filters':16, 'filter_size':(2,2), 'pad':0}),
-        (layers.MaxPool2DLayer, {'pool_size': (1, 1)}),
-        (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
-        (layers.DropoutLayer, {'p':0.5}),
-        (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
-        (layers.DropoutLayer, {'p':0.5}),
-        (layers.DenseLayer, {'num_units': 256, 'nonlinearity':nonlinearities.tanh}),
-        (layers.DropoutLayer, {'p':0.2}),
-        (layers.DenseLayer, {'num_units': 18, 'nonlinearity':nonlinearities.softmax}),
-    ]
+       (layers.InputLayer, {'shape':(None, 3, 64-2*crop_value, 64-2*crop_value)}),
+       (layers.Conv2DLayer, {'num_filters':16, 'filter_size':(4,4), 'pad':0}),
+       
+       (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(3,3), 'pad':0}),
+       (layers.MaxPool2DLayer, {'pool_size': (2, 2)}),
+       (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(3,3), 'pad':0}),
+       (layers.MaxPool2DLayer, {'pool_size': (3, 3)}),
+       (layers.Conv2DLayer, {'num_filters':16, 'filter_size':(2,2), 'pad':0}),
+       
+       (layers.MaxPool2DLayer, {'pool_size': (2, 2)}),
+       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
+       (layers.DropoutLayer, {'p':0.5}),
+       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
+       (layers.DropoutLayer, {'p':0.5}),
+       (layers.DenseLayer, {'num_units': 256, 'nonlinearity':nonlinearities.leaky_rectify}),
+       (layers.DropoutLayer, {'p':0.2}),
+       (layers.DenseLayer, {'num_units': 18, 'nonlinearity':nonlinearities.softmax}),
+   ] 
 
 
     net = NeuralNet(
@@ -79,9 +100,10 @@ def keep_dim(layers):
 class Classifier(BaseEstimator):
 
     def __init__(self):
+        self.crop_value = 5
         self.net = make_pipeline(
             #GoogleNet(aggregate_function=keep_dim, layer_names=["input"]),
-            build_model()
+            build_model(self.crop_value)
         )
         
     def data_augmentation(self, X, y):
@@ -92,6 +114,7 @@ class Classifier(BaseEstimator):
     def preprocess(self, X, transpose=True):
         X = (X / 255.)
         X = X.astype(np.float32)
+        X = X[:, self.crop_value:64-self.crop_value, self.crop_value:64-self.crop_value, :]
         if transpose:
             X = X.transpose((0, 3, 1, 2))
         return X
