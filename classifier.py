@@ -2,7 +2,7 @@ import os
 os.environ["THEANO_FLAGS"] = "device=gpu"
 from sklearn.base import BaseEstimator
 import os
-from lasagne import layers, nonlinearities
+from lasagne import layers, nonlinearities, updates, init, objectives
 from lasagne.updates import nesterov_momentum, rmsprop, adagrad
 from nolearn.lasagne import NeuralNet, BatchIterator
 from nolearn.lasagne.handlers import EarlyStopping
@@ -30,6 +30,9 @@ def makeGaussian(size, fwhm = 3, center=None):
 
     return np.exp(-4*np.log(2) * ((x-x0)**2 + (y-y0)**2) / fwhm**2).astype(np.float32)
 
+def apply_filter(x, filt):
+    return np.array([ ex * filt for ex in x])
+
 def sample_from_rotation_x(x):
     x_extends = []
     for i in range(x.shape[0]):
@@ -42,51 +45,39 @@ def sample_from_rotation_x(x):
     x_extends = np.array(x_extends) #.transpose((0, 2, 3, 1))
     return x_extends
 
-
-def apply_filter(x, filt):
-    return np.array([ ex * filt for ex in x])
-
 def sample_from_rotation_y(y):
     y_extends = []
     for i in y:
         y_extends.extend( repeat( i ,4) )
     return np.array(y_extends)
 
-
 class FlipBatchIterator(BatchIterator):    
     def transform(self, Xb, yb):
         Xb, yb = super(FlipBatchIterator, self).transform(Xb, yb)
         # Flip half of the images in this batch at random:
         bs = Xb.shape[0]
-        indices = np.random.choice(bs, bs / 2, replace=False)
+        indices = np.random.choice(bs, bs / 4, replace=False)
         Xb[indices] = Xb[indices, :, ::-1]
         
         # Drop randomly half of the features in each batch:
-        #bf = Xb.shape[2]
-        #indices_features = np.random.choice(bf, bf / 2, replace=False)
-        #Xb = Xb.transpose((2, 0, 1, 3))
-        #Xb[indices_features] = Xb[indices_features]
-        #Xb = Xb.transpose((1, 2, 0, 3))
+        bf = Xb.shape[2]
+        indices_features = np.random.choice(bf, bf / 2, replace=False)
+        Xb = Xb.transpose((2, 0, 1, 3))
+        Xb[indices_features] = Xb[indices_features]
+        Xb = Xb.transpose((1, 2, 0, 3))
         return Xb, yb
 
 def build_model(crop_value):    
     L=[
        (layers.InputLayer, {'shape':(None, 3, 64-2*crop_value, 64-2*crop_value)}),
-       (layers.Conv2DLayer, {'num_filters':16, 'filter_size':(4,4), 'pad':0}),
-       
-       (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(3,3), 'pad':0}),
+       (layers.Conv2DLayer, {'num_filters':64, 'filter_size':(3,3), 'pad':0}),
        (layers.MaxPool2DLayer, {'pool_size': (2, 2)}),
-       (layers.Conv2DLayer, {'num_filters':32, 'filter_size':(3,3), 'pad':0}),
-       (layers.MaxPool2DLayer, {'pool_size': (3, 3)}),
-       (layers.Conv2DLayer, {'num_filters':16, 'filter_size':(2,2), 'pad':0}),
-       
+       (layers.Conv2DLayer, {'num_filters':128, 'filter_size':(2,2), 'pad':0}),
        (layers.MaxPool2DLayer, {'pool_size': (2, 2)}),
-       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
-       (layers.DropoutLayer, {'p':0.5}),
-       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify}),
-       (layers.DropoutLayer, {'p':0.5}),
-       (layers.DenseLayer, {'num_units': 256, 'nonlinearity':nonlinearities.leaky_rectify}),
-       (layers.DropoutLayer, {'p':0.2}),
+       (layers.Conv2DLayer, {'num_filters':128, 'filter_size':(2,2), 'pad':0}),
+       (layers.MaxPool2DLayer, {'pool_size': (4, 4)}),
+       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify, 'W': init.GlorotUniform(gain='relu')}),
+       (layers.DenseLayer, {'num_units': 512, 'nonlinearity':nonlinearities.leaky_rectify, 'W': init.GlorotUniform(gain='relu')}),
        (layers.DenseLayer, {'num_units': 18, 'nonlinearity':nonlinearities.softmax}),
    ] 
 
@@ -102,20 +93,12 @@ def build_model(crop_value):
         )
     return net
 
-# currently used
-def keep_dim(layers):
-    #print len(layers), layers[0].shape
-    return layers[0]
-
 class Classifier(BaseEstimator):
 
     def __init__(self):
         self.crop_value = 0
-        self.net = make_pipeline(
-            #GoogleNet(aggregate_function=keep_dim, layer_names=["input"]),
-            build_model(self.crop_value)
-        )
         self.gaussianFilter = np.tile(makeGaussian(64-2*self.crop_value, 64-2*self.crop_value-10), (3,1,1)).transpose(1,2,0)
+        self.net = build_model(self.crop_value)
         
     def data_augmentation(self, X, y):
         X = sample_from_rotation_x(X)
@@ -125,14 +108,10 @@ class Classifier(BaseEstimator):
     def preprocess(self, X, transpose=True):
         X = (X / 255.)
         #X = X[:, self.crop_value:64-self.crop_value, self.crop_value:64-self.crop_value, :]
-        print X.shape
-        print self.gaussianFilter.shape
         X = apply_filter(X, self.gaussianFilter)
-        print X.shape
         X = X.astype(np.float32)
         if transpose:
             X = X.transpose((0, 3, 1, 2))
-        print X.shape
         return X
     
     def preprocess_y(self, y):
@@ -151,4 +130,3 @@ class Classifier(BaseEstimator):
     def predict_proba(self, X):
         X = self.preprocess(X)
         return self.net.predict_proba(X)
-
